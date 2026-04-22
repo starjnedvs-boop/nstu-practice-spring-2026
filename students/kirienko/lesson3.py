@@ -13,6 +13,11 @@ class Layer(Protocol):
     def grad(self) -> Sequence[np.ndarray]: ...
 
 
+class Loss(Protocol):
+    def forward(self, x: np.ndarray, y: np.ndarray) -> np.ndarray: ...
+    def backward(self) -> np.ndarray: ...
+
+
 class LinearLayer:
     def __init__(
         self,
@@ -140,6 +145,98 @@ class Model:
         return [g for layer in self.layers for g in layer.grad]
 
 
+# Функции потерь (Loss functions)
+
+
+class MSELoss:
+    def __init__(self) -> None:
+        self._x: np.ndarray | None = None
+        self._y: np.ndarray | None = None
+        self._dy: np.ndarray | None = None
+
+    def forward(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+        self._x = x
+        self._y = y
+        return np.mean((x - y) ** 2)
+
+    def backward(self) -> np.ndarray:
+        assert self._x is not None and self._y is not None
+        self._dy = 2 * (self._x - self._y) / self._x.size
+        return self._dy
+
+
+class BCELoss:
+    def __init__(self) -> None:
+        self._x: np.ndarray | None = None
+        self._y: np.ndarray | None = None
+        self._dy: np.ndarray | None = None
+        self._eps = 1e-15
+
+    def forward(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+        self._x = np.clip(x, self._eps, 1 - self._eps)
+        self._y = y
+        return -np.mean(y * np.log(self._x) + (1 - y) * np.log(1 - self._x))
+
+    def backward(self) -> np.ndarray:
+        assert self._x is not None and self._y is not None
+        batch_size = self._x.shape[0]
+        self._dy = (self._x - self._y) / (self._x * (1 - self._x) * batch_size)
+        return self._dy
+
+
+class NLLLoss:
+    def __init__(self) -> None:
+        self._x: np.ndarray | None = None
+        self._y: np.ndarray | None = None
+        self._hot_y: np.ndarray | None = None
+        self._dy: np.ndarray | None = None
+
+    def forward(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+        self._x = x
+        self._y = y
+        batch_size = x.shape[0]
+        self._hot_y = np.zeros_like(x)
+        self._hot_y[np.arange(batch_size), y] = 1
+        return -np.sum(x * self._hot_y) / batch_size
+
+    def backward(self) -> np.ndarray:
+        assert self._hot_y is not None and self._x is not None
+        batch_size = self._x.shape[0]
+        self._dy = -self._hot_y / batch_size
+        return self._dy
+
+
+class CrossEntropyLoss:
+    def __init__(self) -> None:
+        self._x: np.ndarray | None = None
+        self._y: np.ndarray | None = None
+        self._hot_y: np.ndarray | None = None
+        self._logprobs: np.ndarray | None = None
+        self._dy: np.ndarray | None = None
+
+    def forward(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+        self._x = x
+        self._y = y
+        batch_size = x.shape[0]
+
+        x_max = np.max(x, axis=-1, keepdims=True)
+        x_shifted = x - x_max
+        log_sum_exp = np.log(np.sum(np.exp(x_shifted), axis=-1, keepdims=True))
+        self._logprobs = x_shifted - log_sum_exp
+
+        self._hot_y = np.zeros_like(x)
+        self._hot_y[np.arange(batch_size), y] = 1
+
+        return -np.sum(self._logprobs * self._hot_y) / batch_size
+
+    def backward(self) -> np.ndarray:
+        assert self._logprobs is not None and self._hot_y is not None and self._x is not None
+        batch_size = self._x.shape[0]
+        softmax = np.exp(self._logprobs)
+        self._dy = (softmax - self._hot_y) / batch_size
+        return self._dy
+
+
 class Exercise:
     @staticmethod
     def get_student() -> str:
@@ -172,3 +269,44 @@ class Exercise:
     @staticmethod
     def create_model(*layers: Layer) -> Layer:
         return Model(*layers)
+
+    @staticmethod
+    def create_mse_loss() -> Loss:
+        return MSELoss()
+
+    @staticmethod
+    def create_bce_loss() -> Loss:
+        return BCELoss()
+
+    @staticmethod
+    def create_nll_loss() -> Loss:
+        return NLLLoss()
+
+    @staticmethod
+    def create_cross_entropy_loss() -> Loss:
+        return CrossEntropyLoss()
+
+    @staticmethod
+    def train_model(
+        model: Layer,
+        loss: Loss,
+        x: np.ndarray,
+        y: np.ndarray,
+        lr: float,
+        n_epoch: int,
+        batch_size: int,
+    ) -> None:
+        n_samples = x.shape[0]
+
+        for _ in range(n_epoch):
+            # Разбиваем данные на батчи
+            for i in range(0, n_samples, batch_size):
+                x_batch = x[i : i + batch_size]
+                y_batch = y[i : i + batch_size]
+
+                loss.forward(model.forward(x_batch), y_batch)
+                model.backward(loss.backward())
+
+                # Обновление весов (градиентный спуск)
+                for p, g in zip(model.parameters, model.grad, strict=True):
+                    p -= lr * g

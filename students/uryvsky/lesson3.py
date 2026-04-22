@@ -29,32 +29,38 @@ class LinearLayer(Layer):
         k = np.sqrt(1 / in_features)
         self.weights = rng.uniform(-k, k, (out_features, in_features)).astype(np.float32)
         self.bias = rng.uniform(-k, k, out_features).astype(np.float32)
+        self.x = None
+        self.dw = np.zeros_like(self.weights)
+        self.db = np.zeros_like(self.bias)
 
     def forward(self, x: np.ndarray) -> np.ndarray:
-        self.input = x
+        self.x = x
         return x @ self.weights.T + self.bias
 
     def backward(self, dy: np.ndarray) -> np.ndarray:
-        self.grad_w = dy.T @ self.input
-        self.grad_b = np.sum(dy, axis=0)
+        self.dw = dy.T @ self.x
+        self.db = np.sum(dy, axis=0)
         return dy @ self.weights
 
     @property
     def parameters(self) -> Sequence[np.ndarray]:
-        return [self.weights, self.bias]
+        return self.weights, self.bias
 
     @property
     def grad(self) -> Sequence[np.ndarray]:
-        return [self.grad_w, self.grad_b]
+        return self.dw, self.db
 
 
 class ReLULayer(Layer):
+    def __init__(self) -> None:
+        self.mask: np.ndarray
+
     def forward(self, x: np.ndarray) -> np.ndarray:
-        self.input = x
-        return np.maximum(0, x)
+        self.mask = x > 0
+        return x * self.mask
 
     def backward(self, dy: np.ndarray) -> np.ndarray:
-        return dy * (self.input > 0)
+        return dy * self.mask
 
     @property
     def parameters(self) -> Sequence[np.ndarray]:
@@ -66,12 +72,15 @@ class ReLULayer(Layer):
 
 
 class SigmoidLayer(Layer):
+    def __init__(self) -> None:
+        self.sgm_out: np.ndarray
+
     def forward(self, x: np.ndarray) -> np.ndarray:
-        self.sig = 1 / (1 + np.exp(-x))
-        return self.sig
+        self.sgm_out = 1 / (1 + np.exp(-x))
+        return self.sgm_out
 
     def backward(self, dy: np.ndarray) -> np.ndarray:
-        return dy * self.sig * (1 - self.sig)
+        return dy * self.sgm_out * (1 - self.sgm_out)
 
     @property
     def parameters(self) -> Sequence[np.ndarray]:
@@ -83,13 +92,19 @@ class SigmoidLayer(Layer):
 
 
 class LogSoftmaxLayer(Layer):
+    def __init__(self) -> None:
+        self.softmax: np.ndarray
+
     def forward(self, x: np.ndarray) -> np.ndarray:
-        c = np.max(x, axis=-1, keepdims=True)
-        self.y = x - c - np.log(np.sum(np.exp(x - c), axis=-1, keepdims=True))
-        return self.y
+        x_solu = x - np.max(x, axis=-1, keepdims=True)
+        exp_x = np.exp(x_solu)
+        sum_exp = np.sum(exp_x, axis=-1, keepdims=True)
+        self.softmax = exp_x / sum_exp
+        return x_solu - np.log(sum_exp)
 
     def backward(self, dy: np.ndarray) -> np.ndarray:
-        return dy - np.exp(self.y) * np.sum(dy, axis=-1, keepdims=True)
+        sum_dy = np.sum(dy, axis=-1, keepdims=True)
+        return dy - self.softmax * sum_dy
 
     @property
     def parameters(self) -> Sequence[np.ndarray]:
@@ -101,8 +116,8 @@ class LogSoftmaxLayer(Layer):
 
 
 class Model(Layer):
-    def __init__(self, *layers: Layer) -> None:
-        self.layers = layers
+    def __init__(self, *layer: Layer):
+        self.layers = layer
 
     def forward(self, x: np.ndarray) -> np.ndarray:
         for layer in self.layers:
@@ -131,58 +146,56 @@ class Model(Layer):
 
 class MSELoss(Loss):
     def forward(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
-        self.x = x
-        self.y = y
-        return np.mean(np.square(y - x))
+        self.grad = 2.0 * (x - y) / x.size
+        return np.mean(np.square(x - y))
 
     def backward(self) -> np.ndarray:
-        return 2 * (self.x - self.y) / self.x.size
+        return self.grad
 
 
 class BCELoss(Loss):
     def forward(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
-        self.x = x
-        self.y = y
-        return -np.mean(y * np.log(x) + (1 - y) * np.log(1 - x))
+        self.grad = -(y / x - (1.0 - y) / (1.0 - x)) / x.shape[0]
+        return -np.mean(y * np.log(x) + (1.0 - y) * np.log(1.0 - x))
 
     def backward(self) -> np.ndarray:
-        batch_size = self.x.shape[0]
-        return -(self.y - self.x) / (self.x * (1 - self.x)) / batch_size
+        return self.grad
 
 
 class NLLLoss(Loss):
     def forward(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
-        self.x = x
-        self.y = y
+        self.grad = np.zeros_like(x)
+        self.grad[np.arange(x.shape[0]), y] = -1.0 / x.shape[0]
         return -np.mean(x[np.arange(x.shape[0]), y])
 
     def backward(self) -> np.ndarray:
-        batch_size = self.x.shape[0]
-        dx = np.zeros_like(self.x)
-        dx[np.arange(self.x.shape[0]), self.y] = -1 / batch_size
-        return dx
+        return self.grad
 
 
 class CrossEntropyLoss(Loss):
-    def log_softmax(self, x: np.ndarray) -> np.ndarray:
-        x = x - np.max(x, axis=-1, keepdims=True)
-        return x - np.log(np.sum(np.exp(x), axis=-1, keepdims=True))
-
     def forward(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
-        self.batch_size = x.shape[0]
-        self.hot_y = np.zeros_like(x)
-        self.hot_y[np.arange(x.shape[0]), y] = 1
-        self.logprobs = self.log_softmax(x)
-        return -np.sum(self.logprobs * self.hot_y) / x.shape[0]
+        self.grad = np.zeros_like(x)
+        self.grad[np.arange(x.shape[0]), y] = 1.0
+
+        x_solu = x - np.max(x, axis=-1, keepdims=True)
+        exp_x = np.exp(x_solu)
+        sum_exp = np.sum(exp_x, axis=-1, keepdims=True)
+        log_sum = np.log(sum_exp)
+        log_probabl = x_solu - log_sum
+        softmax = np.exp(log_probabl)
+
+        self.grad = (softmax - self.grad) / x.shape[0]
+
+        return -np.mean(log_probabl[np.arange(x.shape[0]), y])
 
     def backward(self) -> np.ndarray:
-        return (np.exp(self.logprobs) - self.hot_y) / self.batch_size
+        return self.grad
 
 
 class Exercise:
     @staticmethod
     def get_student() -> str:
-        return "Кузьмин Александр Андреевич, ПМ-35"
+        return "Урывский Александр Александрович, ПМ-31"
 
     @staticmethod
     def get_topic() -> str:
@@ -230,9 +243,8 @@ class Exercise:
     ) -> None:
         for _ in range(n_epoch):
             for i in range(0, x.shape[0], batch_size):
-                x_batch = x[i : i + batch_size]
-                y_batch = y[i : i + batch_size]
-                loss.forward(model.forward(x_batch), y_batch)
+                sol = model.forward(x[i : i + batch_size])
+                loss.forward(sol, y[i : i + batch_size])
                 model.backward(loss.backward())
-                for p, g in zip(model.parameters, model.grad, strict=True):
-                    p += -lr * g
+                for param, grad in zip(model.parameters, model.grad, strict=True):
+                    param -= grad * lr

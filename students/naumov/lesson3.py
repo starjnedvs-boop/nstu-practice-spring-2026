@@ -146,6 +146,82 @@ class Model(Layer):
         return tuple(grads)
 
 
+class MSELoss(Loss):
+    def __init__(self):
+        self.pred: np.ndarray | None = None
+        self.target: np.ndarray | None = None
+
+    def forward(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+        self.pred = x
+        self.target = y
+        return np.mean((x - y) ** 2)
+
+    def backward(self) -> np.ndarray:
+        # Добавляем проверку, чтобы линтер не ругался
+        if self.pred is None or self.target is None:
+            raise RuntimeError("forward must be called before backward")
+        return 2 * (self.pred - self.target) / self.pred.size
+
+
+class BCELoss(Loss):
+    def __init__(self):
+        self.pred: np.ndarray | None = None
+        self.target: np.ndarray | None = None
+        self.eps = 1e-13
+
+    def forward(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+        self.pred = np.clip(x, self.eps, 1 - self.eps)
+        self.target = y
+        return -np.mean(y * np.log(self.pred) + (1 - y) * np.log(1 - self.pred))
+
+    def backward(self) -> np.ndarray:
+        if self.pred is None or self.target is None:
+            raise RuntimeError("forward must be called before backward")
+        batch_size = self.pred.shape[0]
+        return (self.pred - self.target) / (self.pred * (1 - self.pred)) / batch_size
+
+
+class NLLLoss(Loss):
+    def __init__(self):
+        self.logits: np.ndarray | None = None
+        self.labels: np.ndarray | None = None
+
+    def forward(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+        self.logits = x
+        self.labels = y.astype(np.int32)
+        batch_size = x.shape[0]
+        return -np.mean(x[np.arange(batch_size), self.labels])
+
+    def backward(self) -> np.ndarray:
+        if self.logits is None or self.labels is None:
+            raise RuntimeError("forward must be called before backward")
+        batch_size = self.logits.shape[0]
+        grad = np.zeros_like(self.logits)
+        grad[np.arange(batch_size), self.labels] = -1 / batch_size
+        return grad
+
+
+class CrossEntropyLoss(Loss):
+    def __init__(self):
+        self.logsoftmax: np.ndarray | None = None
+        self.labels: np.ndarray | None = None
+
+    def forward(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+        x_shift = x - np.max(x, axis=-1, keepdims=True)
+        self.logsoftmax = x_shift - np.log(np.sum(np.exp(x_shift), axis=-1, keepdims=True))
+        self.labels = y.astype(np.int32)
+        batch_size = x.shape[0]
+        return -np.mean(self.logsoftmax[np.arange(batch_size), self.labels])
+
+    def backward(self) -> np.ndarray:
+        if self.logsoftmax is None or self.labels is None:
+            raise RuntimeError("forward must be called before backward")
+        batch_size = self.logsoftmax.shape[0]
+        grad = np.exp(self.logsoftmax).copy()
+        grad[np.arange(batch_size), self.labels] -= 1
+        return grad / batch_size
+
+
 class Exercise:
     @staticmethod
     def get_student() -> str:
@@ -174,3 +250,33 @@ class Exercise:
     @staticmethod
     def create_model(*layers: Layer) -> Layer:
         return Model(*layers)
+
+    @staticmethod
+    def create_mse_loss() -> Loss:
+        return MSELoss()
+
+    @staticmethod
+    def create_bce_loss() -> Loss:
+        return BCELoss()
+
+    @staticmethod
+    def create_nll_loss() -> Loss:
+        return NLLLoss()
+
+    @staticmethod
+    def create_cross_entropy_loss() -> Loss:
+        return CrossEntropyLoss()
+
+    @staticmethod
+    def train_model(
+        model: Layer, loss: Loss, x: np.ndarray, y: np.ndarray, lr: float, n_epoch: int, batch_size: int
+    ) -> None:
+        idx = np.arange(batch_size, x.shape[0], batch_size)
+
+        for _ in range(n_epoch):
+            for x_batch, y_batch in zip(np.split(x, idx, axis=0), np.split(y, idx, axis=0), strict=True):
+                loss.forward(model.forward(x_batch), y_batch)
+                model.backward(loss.backward())
+
+                for p, g in zip(model.parameters, model.grad, strict=True):
+                    p += -lr * g

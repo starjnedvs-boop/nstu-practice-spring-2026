@@ -16,6 +16,14 @@ class Layer(Protocol):
     def grad(self) -> Sequence[np.ndarray]: ...
 
 
+class Loss(Protocol):
+    def __init__(self) -> None: ...
+
+    def forward(self, x: np.ndarray, y: np.ndarray) -> np.ndarray: ...
+
+    def backward(self) -> np.ndarray: ...
+
+
 class LinearLayer(Layer):
     def __init__(self, in_features: int, out_features: int, rng: np.random.Generator | None = None) -> None:
         if rng is None:
@@ -28,7 +36,6 @@ class LinearLayer(Layer):
         self.dbias = np.zeros_like(self.bias)
 
     def forward(self, x: np.ndarray) -> np.ndarray:
-
         self.input = x
         return np.dot(x, self.weights.T) + self.bias
 
@@ -157,6 +164,82 @@ class Model(Layer):
         return grads
 
 
+class MSELoss(Loss):
+    def __init__(self) -> None:
+        self.x: np.ndarray = np.empty(0, dtype=np.float32)
+        self.y: np.ndarray = np.empty(0, dtype=np.float32)
+
+    def forward(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+        self.x = x
+        self.y = y
+        return np.array(np.mean((x - y) ** 2))
+
+    def backward(self) -> np.ndarray:
+        n = self.x.size
+        return 2 * (self.x - self.y) / n
+
+
+class BCELoss(Loss):
+    def __init__(self, eps: float = 1e-8) -> None:
+        self.x: np.ndarray = np.empty(0, dtype=np.float32)
+        self.y: np.ndarray = np.empty(0, dtype=np.float32)
+        self.eps = eps
+
+    def forward(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+        self.x = x
+        self.y = y
+        x = np.clip(x, self.eps, 1 - self.eps)
+        return np.array(-np.mean(y * np.log(x) + (1 - y) * np.log(1 - x)))
+
+    def backward(self) -> np.ndarray:
+        x = np.clip(self.x, self.eps, 1 - self.eps)
+        n = self.x.size
+        return (x - self.y) / (x * (1 - x)) / n
+
+
+class NLLLoss(Loss):
+    def __init__(self) -> None:
+        self.x: np.ndarray = np.empty(0, dtype=np.float32)
+        self.y: np.ndarray = np.empty(0, dtype=np.int64)
+        self.grad: np.ndarray = np.empty(0, dtype=np.float32)
+
+    def forward(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+        self.x = x
+        self.y = y
+
+        return np.array(-np.mean(x[np.arange(x.shape[0]), y]), dtype=np.float32)
+
+    def backward(self) -> np.ndarray:
+        N = self.x.shape[0]
+
+        grad = np.zeros_like(self.x, dtype=np.float32)
+        grad[np.arange(N), self.y] = -1.0 / N
+
+        return grad
+
+
+class CELoss(Loss):
+    def __init__(self, eps: float = 1e-8) -> None:
+        self.x: np.ndarray = np.empty(0, dtype=np.float32)
+        self.y: np.ndarray = np.empty(0, dtype=np.int64)
+        self.eps = eps
+
+    def forward(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+        self.x = x
+        self.y = y
+
+        x = np.clip(x, self.eps, 1 - self.eps)
+        return np.array(-np.mean(np.log(x[np.arange(x.shape[0]), y])))
+
+    def backward(self) -> np.ndarray:
+        n = self.x.shape[0]
+
+        grad = np.zeros_like(self.x)
+        grad[np.arange(n), self.y] = -1.0 / (self.x[np.arange(n), self.y] * n)
+
+        return grad
+
+
 class Exercise:
     @staticmethod
     def get_student() -> str:
@@ -185,3 +268,19 @@ class Exercise:
     @staticmethod
     def create_model(*layers: Layer) -> Layer:
         return Model(*layers)
+
+    @staticmethod
+    def create_mse_loss() -> Loss:
+        return MSELoss()
+
+    @staticmethod
+    def create_bce_loss() -> Loss:
+        return BCELoss()
+
+    @staticmethod
+    def create_nll_loss() -> Loss:
+        return NLLLoss()
+
+    @staticmethod
+    def create_cross_entropy_loss() -> Loss:
+        return CELoss()

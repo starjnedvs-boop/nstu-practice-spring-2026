@@ -16,6 +16,12 @@ class Layer(Protocol):
     def grad(self) -> Sequence[np.ndarray]: ...
 
 
+class Loss(Protocol):
+    def forward(self, x: np.ndarray, y: np.ndarray) -> np.ndarray: ...
+
+    def backward(self) -> np.ndarray: ...
+
+
 class LinearLayer(Layer):
     def __init__(self, in_features: int, out_features: int, rng: np.random.Generator | None = None) -> None:
         if rng is None:
@@ -123,6 +129,53 @@ class Model(Layer):
         return grads
 
 
+class MSELoss(Loss):
+    def forward(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+        self.x = x
+        self.y = y
+        return np.mean(np.square(x - y))
+
+    def backward(self) -> np.ndarray:
+        return 2 * (self.x - self.y) / self.x.size
+
+
+class BCELoss(Loss):
+    def forward(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+        self.x = x
+        self.y = y
+        return -np.mean(y * np.log(x) + (1 - y) * np.log(1 - x))
+
+    def backward(self) -> np.ndarray:
+        return -(self.y / self.x - (1 - self.y) / (1 - self.x)) / self.x.shape[0]
+
+
+class NLLLoss(Loss):
+    def forward(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+        batch_size = x.shape[0]
+        self.grad = np.zeros_like(x)
+        self.grad[np.arange(batch_size), y] = -1 / batch_size
+        return -np.mean(x[np.arange(batch_size), y])
+
+    def backward(self) -> np.ndarray:
+        return self.grad
+
+
+class CrossEntropyLoss(Loss):
+    def forward(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+        self.y = y
+        batch_size = x.shape[0]
+        max_x = np.max(x, -1, keepdims=True)
+        logsoftmax = x - max_x - np.log(np.sum(np.exp(x - max_x), axis=-1, keepdims=True))
+        self.p = np.exp(logsoftmax)
+        return -np.mean(logsoftmax[np.arange(batch_size), y])
+
+    def backward(self) -> np.ndarray:
+        batch_size = self.p.shape[0]
+        one_hot = np.zeros_like(self.p)
+        one_hot[np.arange(batch_size), self.y] = 1
+        return (self.p - one_hot) / batch_size
+
+
 class Exercise:
     @staticmethod
     def get_student() -> str:
@@ -151,3 +204,42 @@ class Exercise:
     @staticmethod
     def create_model(*layers: Layer) -> Layer:
         return Model(*layers)
+
+    @staticmethod
+    def create_mse_loss() -> Loss:
+        return MSELoss()
+
+    @staticmethod
+    def create_bce_loss() -> Loss:
+        return BCELoss()
+
+    @staticmethod
+    def create_nll_loss() -> Loss:
+        return NLLLoss()
+
+    @staticmethod
+    def create_cross_entropy_loss() -> Loss:
+        return CrossEntropyLoss()
+
+    @staticmethod
+    def train_model(
+        model: Layer, loss: Loss, x: np.ndarray, y: np.ndarray, lr: float, n_epoch: int, batch_size: int
+    ) -> None:
+        n_samples = x.shape[0]
+
+        for _ in range(n_epoch):
+            for start in range(0, n_samples, batch_size):
+                x_batch = x[start : start + batch_size]
+                y_batch = y[start : start + batch_size]
+
+                predictions = model.forward(x_batch)
+                loss.forward(predictions, y_batch)
+                dloss = loss.backward()
+
+                model.backward(dloss)
+
+                params = model.parameters
+                grads = model.grad
+
+                for param, grad in zip(params, grads, strict=True):
+                    param -= lr * grad

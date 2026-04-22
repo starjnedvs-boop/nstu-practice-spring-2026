@@ -69,7 +69,7 @@ class ReLULayer(Layer):
         self._input: np.ndarray | None = None
 
     def forward(self, x: np.ndarray) -> np.ndarray:
-        self._input = np.asarray(x)
+        self._input = x
         return np.maximum(0, x)
 
     def backward(self, dy: np.ndarray) -> np.ndarray:
@@ -226,21 +226,15 @@ class NLLLoss(Loss):
         self._x = x
         self._y = y
         n = x.shape[0]
-        if y.ndim == 1:  # индексы классов
-            correct_log_probs = x[np.arange(n), y.astype(int)]
-            loss = -np.mean(correct_log_probs)
-        else:  # one-hot
-            loss = -np.mean(np.sum(y * x, axis=-1))
+        correct_log_probs = x[np.arange(n), y.astype(int)]
+        loss = -np.mean(correct_log_probs)
         return loss
 
     def backward(self) -> np.ndarray:
         assert self._x is not None and self._y is not None
         n = self._x.shape[0]
         dx = np.zeros_like(self._x)
-        if self._y.ndim == 1:  # индексы классов
-            dx[np.arange(n), self._y.astype(int)] = -1 / n
-        else:  # one-hot
-            dx = -self._y / n
+        dx[np.arange(n), self._y.astype(int)] = -1 / n
         return dx
 
 
@@ -263,12 +257,7 @@ class CrossEntropyLoss(Loss):
 
         self._softmax = np.exp(log_softmax)
 
-        if y.ndim == 1:
-            # Индексы
-            correct_log_probs = log_softmax[np.arange(n), y.astype(int)]
-        else:
-            # One-hot
-            correct_log_probs = np.sum(y * log_softmax, axis=-1)
+        correct_log_probs = log_softmax[np.arange(n), y.astype(int)]
 
         loss = -np.mean(correct_log_probs)
         return loss
@@ -279,12 +268,7 @@ class CrossEntropyLoss(Loss):
         n = self._x.shape[0]
         dx = self._softmax.copy()
 
-        if self._y.ndim == 1:
-            # Индексы
-            dx[np.arange(n), self._y.astype(int)] -= 1
-        else:
-            # One-hot
-            dx -= self._y
+        dx[np.arange(n), self._y.astype(int)] -= 1
 
         dx = dx / n
         return dx
@@ -347,22 +331,19 @@ class Exercise:
         shuffle: bool = False,
     ) -> None:
         n_samples = x.shape[0]
-        for _ in range(n_epoch):
-            if shuffle:
-                indices = np.random.permutation(n_samples)
-                x_shuffled = x[indices]
-                y_shuffled = y[indices]
-            else:
-                x_shuffled = x
-                y_shuffled = y
+        if shuffle:
+            indices = np.random.permutation(n_samples)
+            x = x[indices]
+            y = y[indices]
 
+        for _ in range(n_epoch):
             for start_idx in range(0, n_samples, batch_size):
                 # Вычисляем конец батча
                 end_idx = min(start_idx + batch_size, n_samples)
 
                 # Вырезаем текущий батч
-                x_batch = x_shuffled[start_idx:end_idx]
-                y_batch = y_shuffled[start_idx:end_idx]
+                x_batch = x[start_idx:end_idx]
+                y_batch = y[start_idx:end_idx]
 
                 # Данные проходят через все слои модели
                 predictions = model.forward(x_batch)
